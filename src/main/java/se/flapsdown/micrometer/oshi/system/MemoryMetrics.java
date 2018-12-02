@@ -45,15 +45,13 @@ public class MemoryMetrics implements MeterBinder {
 
         Gauge.builder("system.memory.swap.total", () -> memory.getSwapTotal())
                 .tags(tags)
-                .description("Memory available")
+                .description("Memory Swap total")
                 .register(meterRegistry);
 
         Gauge.builder("system.memory.swap.used", () -> memory.getSwapUsed())
                 .tags(tags)
-                .description("Memory available")
+                .description("Memory Swap used")
                 .register(meterRegistry);
-
-
 
     }
 

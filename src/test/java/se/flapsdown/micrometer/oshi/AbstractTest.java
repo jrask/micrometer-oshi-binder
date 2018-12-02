@@ -7,14 +7,21 @@ import io.micrometer.core.instrument.step.StepMeterRegistry;
 import io.micrometer.core.instrument.step.StepRegistryConfig;
 import io.micrometer.core.instrument.util.MeterPartition;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
-import se.flapsdown.micrometer.oshi.system.MemoryMetrics;
-import se.flapsdown.micrometer.oshi.system.ProcessorMetrics;
+import se.flapsdown.micrometer.oshi.system.ProcessorMetricsAsPercentage;
 
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+
+/**
+ *
+ * No tests yet, only for lab..
+ *
+ */
+@Ignore
 public class AbstractTest {
 
 
@@ -31,7 +38,7 @@ public class AbstractTest {
 
             @Override
             public Duration step() {
-                return Duration.ofSeconds(1);
+                return Duration.ofSeconds(5);
             }
         };
 
@@ -39,6 +46,7 @@ public class AbstractTest {
 
             @Override
             public void publish() {
+                System.out.println(" > publish()");
                 for (List<Meter> batch : MeterPartition.partition(this, 1)) {
 
                     batch.stream()
@@ -73,7 +81,7 @@ public class AbstractTest {
 
         @Test
         public void run() throws InterruptedException {
-            new ProcessorMetrics().bindTo(m);
-            Thread.sleep(3000);
+            new ProcessorMetricsAsPercentage().bindTo(m);
+            Thread.sleep(300000);
         }
 }
