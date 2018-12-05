@@ -1,85 +1,25 @@
 package se.flapsdown.micrometer.oshi.system;
 
-import io.micrometer.core.instrument.Gauge;
-import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
-import io.micrometer.core.instrument.binder.MeterBinder;
 import oshi.SystemInfo;
 import oshi.hardware.CentralProcessor;
 
-import java.util.Collections;
+public abstract class ProcessorMetrics  {
 
-public class ProcessorMetricsAsPercentage implements MeterBinder {
 
-    private final Iterable<Tag> tags;
+    protected final Iterable<Tag> tags;
 
-    private CpuMetrics cpuMetrics = null;
+    protected ProcessorMetrics.CpuMetrics cpuMetrics = null;
 
-    public ProcessorMetricsAsPercentage() {
-        this(Collections.emptyList());
-    }
-
-    public ProcessorMetricsAsPercentage(Iterable<Tag> tags) {
+    protected ProcessorMetrics(Iterable<Tag> tags) {
         this.tags = tags;
-        cpuMetrics = new CpuMetrics(new SystemInfo().getHardware().getProcessor());
+        this.cpuMetrics = new CpuMetrics(new SystemInfo().getHardware().getProcessor());
     }
 
-    @Override
-    public void bindTo(MeterRegistry meterRegistry) {
-        systemLoad(meterRegistry);
-        cpuUsage(meterRegistry);
-    }
-
-    private void cpuUsage(MeterRegistry meterRegistry) {
-
-        Gauge.builder("system.cpu.cores", () -> cpuMetrics.processor.getPhysicalProcessorCount())
-            .tags(tags)
-            .description("User cpu usage in percent")
-            .register(meterRegistry);
-
-        Gauge.builder("system.cpu.user.pct", "user", this::getCpuMetric)
-            .tags(tags)
-            .description("User cpu usage in percent")
-            .register(meterRegistry);
-
-        Gauge.builder("system.cpu.system.pct", "sys", this::getCpuMetric)
-            .tags(tags)
-            .description("System cpu usage in percent")
-            .register(meterRegistry);
-
-        Gauge.builder("system.cpu.idle.pct", "idle", this::getCpuMetric)
-            .tags(tags)
-            .description("Idle cpu usage in percent")
-            .register(meterRegistry);
-
-        Gauge.builder("system.cpu.nice.pct", "nice", this::getCpuMetric)
-            .tags(tags)
-            .description("Nice cpu usage in percent")
-            .register(meterRegistry);
-    }
-
-    private void systemLoad(MeterRegistry meterRegistry) {
-
-
-        Gauge.builder("system.load.1m", "load1m", this::getCpuMetric )
-            .tags(tags)
-            .description("System load 1m")
-            .register(meterRegistry);
-
-        Gauge.builder("system.load.5m", "load5m", this::getCpuMetric)
-            .tags(tags)
-            .description("System load 5m")
-            .register(meterRegistry);
-
-        Gauge.builder("system.load.15m", "load15m", this::getCpuMetric)
-            .tags(tags)
-            .description("System load 15m")
-            .register(meterRegistry);
-    }
-
-
-
-    private double getCpuMetric(String type) {
+    /**
+     * Gives a chances to refresh without an external counter
+     */
+    public double getCpuMetricAsDouble(String type) {
         cpuMetrics.refresh();
         if (type.equals("user")) {
             return cpuMetrics.user;
@@ -103,29 +43,38 @@ public class ProcessorMetricsAsPercentage implements MeterBinder {
             return cpuMetrics.load5m;
         } else if (type.equals("load15m")) {
             return cpuMetrics.load15m;
+        } else if (type.equals("userTimeSecondsTotal")) {
+            return cpuMetrics.userTimeSecondsTotal;
         }
         return 0;
     }
 
-    static class CpuMetrics {
+    protected static class CpuMetrics {
 
-        long refreshTime = 0;
+        private static final long TICKS_PER_SEC = 10_000_000;
+
+        private long refreshTime = 0;
         final CentralProcessor processor;
 
-        long prevTicks[] = null;
+        private long prevTicks[] = null;
+        private long userTimeSecondsTotal;
 
-        double user;
-        double nice;
-        double sys;
-        double idle;
-        double iowait;
-        double irq;
-        double softirq;
-        double steal;
+        private double user;
+        private double nice;
+        private double sys;
+        private double idle;
+        private double iowait;
+        private double irq;
+        private double softirq;
+        private double steal;
 
-        double load1m;
-        double load5m;
-        double load15m;
+        private double load1m;
+        private double load5m;
+        private double load15m;
+        private long niceTimeInSecondsTotal;
+        private long sysTimeInSecondsTotal;
+
+
 
         public CpuMetrics(CentralProcessor processor) {
             this.processor = processor;
@@ -133,7 +82,7 @@ public class ProcessorMetricsAsPercentage implements MeterBinder {
 
         // publish() is probably invoked on a single thread?
         public void refresh() {
-
+            System.out.println("refresh() 1");
             if (prevTicks == null) {
                 prevTicks = processor.getSystemCpuLoadTicks();
                 return;
@@ -143,6 +92,7 @@ public class ProcessorMetricsAsPercentage implements MeterBinder {
             if (System.currentTimeMillis() - refreshTime < 2000) {
                 return;
             }
+            System.out.println("refresh()");
             double[] systemLoadAverage = processor.getSystemLoadAverage(3);
             load1m = systemLoadAverage[0] < 0 ? 0 : systemLoadAverage[0];
             load5m = systemLoadAverage[1] < 0 ? 0 : systemLoadAverage[1];
@@ -167,6 +117,13 @@ public class ProcessorMetricsAsPercentage implements MeterBinder {
             this.irq     = 100d * irq     / totalCpu;
             this.softirq = 100d * softirq / totalCpu;
             this.steal   = 100d * steal   / totalCpu;
+
+            System.out.println(ticks[CentralProcessor.TickType.USER.getIndex()]);
+
+           // processor.getProcessorCpuLoadBetweenTicks()
+            this.userTimeSecondsTotal = ticks[CentralProcessor.TickType.USER.getIndex()] / 1000;
+            this.niceTimeInSecondsTotal = TICKS_PER_SEC * nice;
+            this.sysTimeInSecondsTotal = TICKS_PER_SEC * nice;
 
             refreshTime = System.currentTimeMillis();
 

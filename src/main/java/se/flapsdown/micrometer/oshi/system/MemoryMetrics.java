@@ -11,7 +11,6 @@ import java.util.Collections;
 
 public class MemoryMetrics implements MeterBinder {
 
-
     private final GlobalMemory memory;
     private final Iterable<Tag> tags;
 
