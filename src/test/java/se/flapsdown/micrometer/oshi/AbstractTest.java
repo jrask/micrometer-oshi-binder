@@ -9,7 +9,7 @@ import io.micrometer.core.instrument.util.MeterPartition;
 import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
-import se.flapsdown.micrometer.oshi.system.TelegrafProcessorMetrics;
+import se.flapsdown.micrometer.oshi.system.ProcessorMetrics;
 
 import java.time.Duration;
 import java.util.List;
@@ -81,7 +81,7 @@ public class AbstractTest {
 
         @Test
         public void run() throws InterruptedException {
-            new TelegrafProcessorMetrics().bindTo(m);
+            new ProcessorMetrics().bindTo(m);
             Thread.sleep(300000);
         }
 }

@@ -1,63 +1,118 @@
 package se.flapsdown.micrometer.oshi.system;
 
+import com.sun.jna.Platform;
+import io.micrometer.core.instrument.FunctionCounter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
+import io.micrometer.core.instrument.binder.MeterBinder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import oshi.SystemInfo;
 import oshi.hardware.CentralProcessor;
+import oshi.util.ExecutingCommand;
+import oshi.util.ParseUtil;
 
-public abstract class ProcessorMetrics  {
+import java.util.Collections;
+
+import static se.flapsdown.micrometer.oshi.system.ProcessorMetrics.ProcessorMetric.*;
+
+public class ProcessorMetrics  implements MeterBinder {
+
+    protected static final Logger LOG = LoggerFactory.getLogger(ProcessorMetrics.class);
+
+    public enum ProcessorMetric {
+        USER_PERCENT,
+        NICE_PERCENT,
+        SYSTEM_PERCENT,
+        IDLE_PERCENT,
+        IOWAIT_PERCENT,
+        IRQ_PERCENT,
+        SOFTIRQ_PERCENT,
+        STEAL_PERCENT,
+
+        LOAD_1M,
+        LOAD_5M,
+        LOAD_15M,
+
+        USER_TIME_SECONDS_TOTAL,
+        NICE_TIME_SECONDS_TOTAL,
+        SYS_TIME_SECONDS_TOTAL,
+        IDLE_TIME_SECONDS_TOTAL,
+        IOWAIT_TIME_IN_SECONDS_TOTAL,
+        IRQ_TIME_IN_SECONDS_TOTAL,
+        SOFTIRQ_TIME_IN_SECONDS_TOTAL,
+        STEAL_TIME_IN_SECONDS_TOTAL
+    }
+
 
 
     protected final Iterable<Tag> tags;
 
-    protected ProcessorMetrics.CpuMetrics cpuMetrics = null;
+    protected final CalculatedCpuMetrics calculatedCpuMetrics;
 
-    protected ProcessorMetrics(Iterable<Tag> tags) {
+    static long TICKS_PER_SEC = 1;
+    static {
+        if (Platform.isMac() || Platform.isLinux()) {
+            TICKS_PER_SEC = ParseUtil.parseLongOrDefault(ExecutingCommand.getFirstAnswer("getconf CLK_TCK"),
+                100L);
+        } else {
+            LOG.info("Ticks per second is unsupported on this platform");
+        }
+    }
+
+    protected boolean isCpuTotalSecondsSupported() {
+        return TICKS_PER_SEC > 1;
+    }
+
+    public ProcessorMetrics() {
+        this(Collections.emptyList());
+    }
+
+    public ProcessorMetrics(Iterable<Tag> tags) {
         this.tags = tags;
-        this.cpuMetrics = new CpuMetrics(new SystemInfo().getHardware().getProcessor());
+        this.calculatedCpuMetrics = new CalculatedCpuMetrics(new SystemInfo().getHardware().getProcessor());
     }
 
     /**
-     * Gives a chances to refresh without an external counter
+     *
      */
-    public double getCpuMetricAsDouble(String type) {
-        cpuMetrics.refresh();
-        if (type.equals("user")) {
-            return cpuMetrics.user;
-        } else if (type.equals("nice")) {
-            return cpuMetrics.nice;
-        } else if (type.equals("sys")) {
-            return cpuMetrics.sys;
-        } else if (type.equals("idle")) {
-            return cpuMetrics.idle;
-        } else if (type.equals("iowait")) {
-            return cpuMetrics.iowait;
-        } else if (type.equals("irq")) {
-            return cpuMetrics.irq;
-        } else if (type.equals("softirq")) {
-            return cpuMetrics.softirq;
-        } else if (type.equals("steal")) {
-            return cpuMetrics.steal;
-        } else if (type.equals("load1m")) {
-            return cpuMetrics.load1m;
-        } else if (type.equals("load5m")) {
-            return cpuMetrics.load5m;
-        } else if (type.equals("load15m")) {
-            return cpuMetrics.load15m;
-        } else if (type.equals("userTimeSecondsTotal")) {
-            return cpuMetrics.userTimeSecondsTotal;
+    public double getCpuMetricAsDouble(ProcessorMetric type) {
+        calculatedCpuMetrics.refresh();
+
+        switch (type) {
+            case USER_PERCENT: return calculatedCpuMetrics.user;
+            case NICE_PERCENT: return calculatedCpuMetrics.nice;
+            case SYSTEM_PERCENT: return calculatedCpuMetrics.sys;
+            case IDLE_PERCENT: return calculatedCpuMetrics.idle;
+            case IOWAIT_PERCENT: return calculatedCpuMetrics.iowait;
+            case IRQ_PERCENT: return calculatedCpuMetrics.irq;
+            case SOFTIRQ_PERCENT: return calculatedCpuMetrics.softirq;
+            case STEAL_PERCENT: return calculatedCpuMetrics.steal;
+
+            case LOAD_1M: return calculatedCpuMetrics.load1m;
+            case LOAD_5M: return calculatedCpuMetrics.load5m;
+            case LOAD_15M: return calculatedCpuMetrics.load15m;
+
+            case USER_TIME_SECONDS_TOTAL: return calculatedCpuMetrics.userTimeSecondsTotal;
+            case NICE_TIME_SECONDS_TOTAL: return calculatedCpuMetrics.niceTimeInSecondsTotal;
+            case SYS_TIME_SECONDS_TOTAL: return calculatedCpuMetrics.sysTimeInSecondsTotal;
+            case IDLE_TIME_SECONDS_TOTAL: return calculatedCpuMetrics.idleTimeInSecondsTotal;
+            case IOWAIT_TIME_IN_SECONDS_TOTAL: return calculatedCpuMetrics.iowaitTimeInSecondsTotal;
+            case IRQ_TIME_IN_SECONDS_TOTAL: return calculatedCpuMetrics.irqTimeInSecondsTotal;
+            case SOFTIRQ_TIME_IN_SECONDS_TOTAL: return calculatedCpuMetrics.softirqTimeInSecondsTotal;
+            case STEAL_TIME_IN_SECONDS_TOTAL: return calculatedCpuMetrics.stealTimeInSecondsTotal;
+            default: return 0;
         }
-        return 0;
     }
 
-    protected static class CpuMetrics {
-
-        private static final long TICKS_PER_SEC = 10_000_000;
+    protected static class CalculatedCpuMetrics {
 
         private long refreshTime = 0;
         final CentralProcessor processor;
 
         private long prevTicks[] = null;
-        private long userTimeSecondsTotal;
+
 
         private double user;
         private double nice;
@@ -71,18 +126,23 @@ public abstract class ProcessorMetrics  {
         private double load1m;
         private double load5m;
         private double load15m;
+
+        private long userTimeSecondsTotal;
         private long niceTimeInSecondsTotal;
         private long sysTimeInSecondsTotal;
+        private long idleTimeInSecondsTotal;
+        private long iowaitTimeInSecondsTotal;
+        private long irqTimeInSecondsTotal;
+        private long softirqTimeInSecondsTotal;
+        private long stealTimeInSecondsTotal;
 
-
-
-        public CpuMetrics(CentralProcessor processor) {
+        public CalculatedCpuMetrics(CentralProcessor processor) {
             this.processor = processor;
         }
 
         // publish() is probably invoked on a single thread?
         public void refresh() {
-            System.out.println("refresh() 1");
+
             if (prevTicks == null) {
                 prevTicks = processor.getSystemCpuLoadTicks();
                 return;
@@ -92,7 +152,7 @@ public abstract class ProcessorMetrics  {
             if (System.currentTimeMillis() - refreshTime < 2000) {
                 return;
             }
-            System.out.println("refresh()");
+
             double[] systemLoadAverage = processor.getSystemLoadAverage(3);
             load1m = systemLoadAverage[0] < 0 ? 0 : systemLoadAverage[0];
             load5m = systemLoadAverage[1] < 0 ? 0 : systemLoadAverage[1];
@@ -118,12 +178,16 @@ public abstract class ProcessorMetrics  {
             this.softirq = 100d * softirq / totalCpu;
             this.steal   = 100d * steal   / totalCpu;
 
-            System.out.println(ticks[CentralProcessor.TickType.USER.getIndex()]);
 
            // processor.getProcessorCpuLoadBetweenTicks()
-            this.userTimeSecondsTotal = ticks[CentralProcessor.TickType.USER.getIndex()] / 1000;
-            this.niceTimeInSecondsTotal = TICKS_PER_SEC * nice;
-            this.sysTimeInSecondsTotal = TICKS_PER_SEC * nice;
+            this.userTimeSecondsTotal = ticks[CentralProcessor.TickType.USER.getIndex()] / TICKS_PER_SEC;
+            this.niceTimeInSecondsTotal = ticks[CentralProcessor.TickType.NICE.getIndex()] / TICKS_PER_SEC;
+            this.sysTimeInSecondsTotal = ticks[CentralProcessor.TickType.SYSTEM.getIndex()] / TICKS_PER_SEC;
+            this.idleTimeInSecondsTotal = ticks[CentralProcessor.TickType.IDLE.getIndex()] / TICKS_PER_SEC;
+            this.iowaitTimeInSecondsTotal = ticks[CentralProcessor.TickType.IOWAIT.getIndex()] / TICKS_PER_SEC;
+            this.irqTimeInSecondsTotal = ticks[CentralProcessor.TickType.IRQ.getIndex()] / TICKS_PER_SEC;
+            this.softirqTimeInSecondsTotal = ticks[CentralProcessor.TickType.SOFTIRQ.getIndex()] / TICKS_PER_SEC;
+            this.stealTimeInSecondsTotal = ticks[CentralProcessor.TickType.STEAL.getIndex()] / TICKS_PER_SEC;
 
             refreshTime = System.currentTimeMillis();
 
@@ -133,6 +197,125 @@ public abstract class ProcessorMetrics  {
             //System.out.format("Idle: %.1f%%\n", this.idle);
 
             prevTicks = ticks;
+        }
+    }
+
+
+    @Override
+    public void bindTo(MeterRegistry meterRegistry) {
+        cpuUsageInSeconds(meterRegistry);
+        cpuUsagePercent(meterRegistry);
+        systemLoad(meterRegistry);
+    }
+
+
+    private void cpuUsagePercent(MeterRegistry meterRegistry) {
+
+
+
+        Gauge.builder("system.cpu.usage", ProcessorMetric.USER_PERCENT, this::getCpuMetricAsDouble)
+            .tags(tags)
+            .tag("mode", "user")
+            .description("User cpu usage in percent")
+            .register(meterRegistry);
+
+        Gauge.builder("system.cpu.usage", ProcessorMetric.SYSTEM_PERCENT, this::getCpuMetricAsDouble)
+            .tags(tags)
+            .tag("mode", "system")
+            .description("System cpu usage in percent")
+            .register(meterRegistry);
+
+        Gauge.builder("system.cpu.usage",  ProcessorMetric.IDLE_PERCENT, this::getCpuMetricAsDouble)
+            .tags(tags)
+            .tag("mode", "idle")
+            .description("Idle cpu usage in percent")
+            .register(meterRegistry);
+
+        Gauge.builder("system.cpu.usage",  ProcessorMetric.NICE_PERCENT, this::getCpuMetricAsDouble)
+            .tags(tags)
+            .tag("mode", "nice")
+            .description("Nice cpu usage in percent")
+            .register(meterRegistry);
+
+        Gauge.builder("system.cpu.usage",  ProcessorMetric.IRQ_PERCENT, this::getCpuMetricAsDouble)
+            .tags(tags)
+            .tag("mode", "irq")
+            .description("IRQ cpu usage in percent")
+            .register(meterRegistry);
+
+        Gauge.builder("system.cpu.usage",  ProcessorMetric.SOFTIRQ_PERCENT, this::getCpuMetricAsDouble)
+            .tags(tags)
+            .tag("mode", "irq")
+            .description("SOFTIRQ cpu usage in percent")
+            .register(meterRegistry);
+    }
+
+    private void systemLoad(MeterRegistry meterRegistry) {
+
+        int cpuCount = calculatedCpuMetrics.processor.getPhysicalProcessorCount();
+
+        Gauge.builder("system.load.1m",  ProcessorMetric.LOAD_1M, this::getCpuMetricAsDouble )
+            .tags(tags)
+            .tag("n_cpus", String.valueOf(cpuCount))
+            .description("System load 1m")
+            .register(meterRegistry);
+
+        Gauge.builder("system.load.5m",  ProcessorMetric.LOAD_5M, this::getCpuMetricAsDouble)
+            .tags(tags)
+            .tag("n_cpus", String.valueOf(cpuCount))
+            .description("System load 5m")
+            .register(meterRegistry);
+
+        Gauge.builder("system.load.5m",  ProcessorMetric.LOAD_15M, this::getCpuMetricAsDouble)
+            .tags(tags)
+            .tag("n_cpus", String.valueOf(cpuCount))
+            .description("System load 15m")
+            .register(meterRegistry);
+    }
+
+
+    private void cpuUsageInSeconds(MeterRegistry meterRegistry) {
+
+        if (isCpuTotalSecondsSupported()) {
+
+            FunctionCounter.builder("system.cpu.seconds.total", USER_TIME_SECONDS_TOTAL, this::getCpuMetricAsDouble)
+                .tags(tags)
+                .tag("mode", "user")
+                .description("User cpu usage in percent")
+                .register(meterRegistry);
+
+            FunctionCounter.builder("system.cpu.seconds.total", IDLE_TIME_SECONDS_TOTAL, this::getCpuMetricAsDouble)
+                .tags(tags)
+                .tag("mode", "idle")
+                .description("User cpu idle in percent")
+                .register(meterRegistry);
+
+            FunctionCounter.builder("system.cpu.seconds.total", SYS_TIME_SECONDS_TOTAL, this::getCpuMetricAsDouble)
+                .tags(tags)
+                .tag("mode", "system")
+                .description("User cpu usage in percent")
+                .register(meterRegistry);
+
+            FunctionCounter.builder("system.cpu.seconds.total", IRQ_TIME_IN_SECONDS_TOTAL, this::getCpuMetricAsDouble)
+                .tags(tags)
+                .tag("mode", "irq")
+                .description("User cpu irq in percent")
+                .register(meterRegistry);
+
+            FunctionCounter.builder("system.cpu.seconds.total", SOFTIRQ_TIME_IN_SECONDS_TOTAL, this::getCpuMetricAsDouble)
+                .tags(tags)
+                .tag("mode", "softirq")
+                .description("User cpu softirq in percent")
+                .register(meterRegistry);
+
+            FunctionCounter.builder("system.cpu.seconds.total", STEAL_TIME_IN_SECONDS_TOTAL, this::getCpuMetricAsDouble)
+                .tags(tags)
+                .tag("mode", "steal")
+                .description("User cpu steal in percent")
+                .register(meterRegistry);
+
+        } else {
+            LOG.info("Cunulative cpu seconds counter is unsupported on this platform");
         }
     }
 }

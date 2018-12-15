@@ -20,6 +20,7 @@ public class MemoryMetrics implements MeterBinder {
 
     public MemoryMetrics(Iterable<Tag> tags) {
         this.memory = new SystemInfo().getHardware().getMemory();
+
         this.tags = tags;
     }
 
