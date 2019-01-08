@@ -51,18 +51,22 @@ public class ProcessorMetrics  implements MeterBinder {
 
     protected final CalculatedCpuMetrics calculatedCpuMetrics;
 
-    static long TICKS_PER_SEC = 1;
+    static long TICKS_PER_SEC = -1;
+
     static {
         if (Platform.isMac() || Platform.isLinux()) {
             TICKS_PER_SEC = ParseUtil.parseLongOrDefault(ExecutingCommand.getFirstAnswer("getconf CLK_TCK"),
-                100L);
+                -1L);
+            if (TICKS_PER_SEC == -1) {
+                LOG.info("Unable to determine ticks per second, cumulative cpu time in seconds will be disabled");
+            }
         } else {
-            LOG.info("Ticks per second is unsupported on this platform");
+            LOG.info("Cumulative cpu time in seconds is unsupported on this platform");
         }
     }
 
     protected boolean isCpuTotalSecondsSupported() {
-        return TICKS_PER_SEC > 1;
+        return TICKS_PER_SEC != -1;
     }
 
     public ProcessorMetrics() {
@@ -71,13 +75,16 @@ public class ProcessorMetrics  implements MeterBinder {
 
     public ProcessorMetrics(Iterable<Tag> tags) {
         this.tags = tags;
-        this.calculatedCpuMetrics = new CalculatedCpuMetrics(new SystemInfo().getHardware().getProcessor());
+        this.calculatedCpuMetrics =
+            new CalculatedCpuMetrics(new SystemInfo().getHardware().getProcessor(), isCpuTotalSecondsSupported());
     }
 
     /**
-     *
+     * Read the value of a specific value. This method mainly exists
+     * to make sure that refresh() is invoked properly instead of invoking it in
+     * each Meter.
      */
-    public double getCpuMetricAsDouble(ProcessorMetric type) {
+    private double getCpuMetricAsDouble(ProcessorMetric type) {
         calculatedCpuMetrics.refresh();
 
         switch (type) {
@@ -106,10 +113,16 @@ public class ProcessorMetrics  implements MeterBinder {
         }
     }
 
+    /**
+     * Calculates and caches CPU load, CPU percent and cumulative cpu time in seconds.
+     * The caching is mainly intended to prevent metrics from being calculated in a single
+     * "fetch" ( like publish() and scrape() ) and not between them.
+     */
     protected static class CalculatedCpuMetrics {
 
         private long refreshTime = 0;
-        final CentralProcessor processor;
+        private final CentralProcessor processor;
+        private final boolean supportsCumulativeTimeInSeconds;
 
         private long prevTicks[] = null;
 
@@ -136,13 +149,15 @@ public class ProcessorMetrics  implements MeterBinder {
         private long softirqTimeInSecondsTotal;
         private long stealTimeInSecondsTotal;
 
-        public CalculatedCpuMetrics(CentralProcessor processor) {
+        public CalculatedCpuMetrics(CentralProcessor processor, boolean supportsCumulativeTimeInSeconds) {
             this.processor = processor;
+            this.supportsCumulativeTimeInSeconds = supportsCumulativeTimeInSeconds;
         }
 
-        // publish() is probably invoked on a single thread?
-        public void refresh() {
+        // Not sure if there are any concurrent threads involved?
+        public synchronized void refresh() {
 
+            // First invocation
             if (prevTicks == null) {
                 prevTicks = processor.getSystemCpuLoadTicks();
                 return;
@@ -178,24 +193,18 @@ public class ProcessorMetrics  implements MeterBinder {
             this.softirq = 100d * softirq / totalCpu;
             this.steal   = 100d * steal   / totalCpu;
 
-
-           // processor.getProcessorCpuLoadBetweenTicks()
-            this.userTimeSecondsTotal = ticks[CentralProcessor.TickType.USER.getIndex()] / TICKS_PER_SEC;
-            this.niceTimeInSecondsTotal = ticks[CentralProcessor.TickType.NICE.getIndex()] / TICKS_PER_SEC;
-            this.sysTimeInSecondsTotal = ticks[CentralProcessor.TickType.SYSTEM.getIndex()] / TICKS_PER_SEC;
-            this.idleTimeInSecondsTotal = ticks[CentralProcessor.TickType.IDLE.getIndex()] / TICKS_PER_SEC;
-            this.iowaitTimeInSecondsTotal = ticks[CentralProcessor.TickType.IOWAIT.getIndex()] / TICKS_PER_SEC;
-            this.irqTimeInSecondsTotal = ticks[CentralProcessor.TickType.IRQ.getIndex()] / TICKS_PER_SEC;
-            this.softirqTimeInSecondsTotal = ticks[CentralProcessor.TickType.SOFTIRQ.getIndex()] / TICKS_PER_SEC;
-            this.stealTimeInSecondsTotal = ticks[CentralProcessor.TickType.STEAL.getIndex()] / TICKS_PER_SEC;
+            if (supportsCumulativeTimeInSeconds) {
+                this.userTimeSecondsTotal = ticks[CentralProcessor.TickType.USER.getIndex()] / TICKS_PER_SEC;
+                this.niceTimeInSecondsTotal = ticks[CentralProcessor.TickType.NICE.getIndex()] / TICKS_PER_SEC;
+                this.sysTimeInSecondsTotal = ticks[CentralProcessor.TickType.SYSTEM.getIndex()] / TICKS_PER_SEC;
+                this.idleTimeInSecondsTotal = ticks[CentralProcessor.TickType.IDLE.getIndex()] / TICKS_PER_SEC;
+                this.iowaitTimeInSecondsTotal = ticks[CentralProcessor.TickType.IOWAIT.getIndex()] / TICKS_PER_SEC;
+                this.irqTimeInSecondsTotal = ticks[CentralProcessor.TickType.IRQ.getIndex()] / TICKS_PER_SEC;
+                this.softirqTimeInSecondsTotal = ticks[CentralProcessor.TickType.SOFTIRQ.getIndex()] / TICKS_PER_SEC;
+                this.stealTimeInSecondsTotal = ticks[CentralProcessor.TickType.STEAL.getIndex()] / TICKS_PER_SEC;
+            }
 
             refreshTime = System.currentTimeMillis();
-
-            //System.out.format("User: %.1f%%\n", this.user);
-            //System.out.format("System: %.1f%%\n", this.sys);
-            //System.out.format("Nice: %.1f%%\n", this.nice);
-            //System.out.format("Idle: %.1f%%\n", this.idle);
-
             prevTicks = ticks;
         }
     }
@@ -211,39 +220,37 @@ public class ProcessorMetrics  implements MeterBinder {
 
     private void cpuUsagePercent(MeterRegistry meterRegistry) {
 
-
-
-        Gauge.builder("system.cpu.usage", ProcessorMetric.USER_PERCENT, this::getCpuMetricAsDouble)
+        Gauge.builder("system.cpu.usage.pct", ProcessorMetric.USER_PERCENT, this::getCpuMetricAsDouble)
             .tags(tags)
             .tag("mode", "user")
             .description("User cpu usage in percent")
             .register(meterRegistry);
 
-        Gauge.builder("system.cpu.usage", ProcessorMetric.SYSTEM_PERCENT, this::getCpuMetricAsDouble)
+        Gauge.builder("system.cpu.usage.pct", ProcessorMetric.SYSTEM_PERCENT, this::getCpuMetricAsDouble)
             .tags(tags)
             .tag("mode", "system")
             .description("System cpu usage in percent")
             .register(meterRegistry);
 
-        Gauge.builder("system.cpu.usage",  ProcessorMetric.IDLE_PERCENT, this::getCpuMetricAsDouble)
+        Gauge.builder("system.cpu.usage.pct",  ProcessorMetric.IDLE_PERCENT, this::getCpuMetricAsDouble)
             .tags(tags)
             .tag("mode", "idle")
             .description("Idle cpu usage in percent")
             .register(meterRegistry);
 
-        Gauge.builder("system.cpu.usage",  ProcessorMetric.NICE_PERCENT, this::getCpuMetricAsDouble)
+        Gauge.builder("system.cpu.usage.pct",  ProcessorMetric.NICE_PERCENT, this::getCpuMetricAsDouble)
             .tags(tags)
             .tag("mode", "nice")
             .description("Nice cpu usage in percent")
             .register(meterRegistry);
 
-        Gauge.builder("system.cpu.usage",  ProcessorMetric.IRQ_PERCENT, this::getCpuMetricAsDouble)
+        Gauge.builder("system.cpu.usage.pct",  ProcessorMetric.IRQ_PERCENT, this::getCpuMetricAsDouble)
             .tags(tags)
             .tag("mode", "irq")
             .description("IRQ cpu usage in percent")
             .register(meterRegistry);
 
-        Gauge.builder("system.cpu.usage",  ProcessorMetric.SOFTIRQ_PERCENT, this::getCpuMetricAsDouble)
+        Gauge.builder("system.cpu.usage.pct",  ProcessorMetric.SOFTIRQ_PERCENT, this::getCpuMetricAsDouble)
             .tags(tags)
             .tag("mode", "irq")
             .description("SOFTIRQ cpu usage in percent")
@@ -266,7 +273,7 @@ public class ProcessorMetrics  implements MeterBinder {
             .description("System load 5m")
             .register(meterRegistry);
 
-        Gauge.builder("system.load.5m",  ProcessorMetric.LOAD_15M, this::getCpuMetricAsDouble)
+        Gauge.builder("system.load.15m",  ProcessorMetric.LOAD_15M, this::getCpuMetricAsDouble)
             .tags(tags)
             .tag("n_cpus", String.valueOf(cpuCount))
             .description("System load 15m")
