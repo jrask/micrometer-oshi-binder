@@ -14,6 +14,8 @@ import oshi.util.ExecutingCommand;
 import oshi.util.ParseUtil;
 
 import java.util.Collections;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static se.flapsdown.micrometer.oshi.system.ProcessorMetrics.ProcessorMetric.*;
 
@@ -21,7 +23,17 @@ public class ProcessorMetrics  implements MeterBinder {
 
     protected static final Logger LOG = LoggerFactory.getLogger(ProcessorMetrics.class);
 
-    public enum ProcessorMetric {
+
+    public static final int MIN_REFRESH_INTERVAL = 2000;
+
+
+    public enum CpuSampleType {
+        ALL,
+        SECONDS_TOTAL,
+        PERCENT
+    }
+
+    protected enum ProcessorMetric {
         USER_PERCENT,
         NICE_PERCENT,
         SYSTEM_PERCENT,
@@ -65,18 +77,22 @@ public class ProcessorMetrics  implements MeterBinder {
         }
     }
 
-    protected boolean isCpuTotalSecondsSupported() {
+    public static boolean isCpuTotalSecondsSupported() {
         return TICKS_PER_SEC != -1;
     }
 
     public ProcessorMetrics() {
-        this(Collections.emptyList());
+        this(Collections.emptyList(), CpuSampleType.ALL);
     }
 
-    public ProcessorMetrics(Iterable<Tag> tags) {
+    public ProcessorMetrics(Iterable<Tag> tags, CpuSampleType cpuSampleType) {
         this.tags = tags;
         this.calculatedCpuMetrics =
-            new CalculatedCpuMetrics(new SystemInfo().getHardware().getProcessor(), isCpuTotalSecondsSupported());
+            new CalculatedCpuMetrics(new SystemInfo().getHardware().getProcessor(), cpuSampleType);
+    }
+
+    public ProcessorMetrics(CpuSampleType type) {
+        this(Collections.emptyList(), type);
     }
 
     /**
@@ -115,47 +131,66 @@ public class ProcessorMetrics  implements MeterBinder {
 
     /**
      * Calculates and caches CPU load, CPU percent and cumulative cpu time in seconds.
-     * The caching is mainly intended to prevent metrics from being calculated in a single
-     * "fetch" ( like publish() and scrape() ) and not between them.
+     *
      */
     protected static class CalculatedCpuMetrics {
 
+        public final CpuSampleType cpuSampleType;
+
+        // Why not make it thread-safe?
+        private final Lock lock = new ReentrantLock();
+
         private long refreshTime = 0;
         private final CentralProcessor processor;
-        private final boolean supportsCumulativeTimeInSeconds;
 
         private long prevTicks[] = null;
 
 
-        private double user;
-        private double nice;
-        private double sys;
-        private double idle;
-        private double iowait;
-        private double irq;
-        private double softirq;
-        private double steal;
+        private volatile double user;
+        private volatile double nice;
+        private volatile double sys;
+        private volatile double idle;
+        private volatile double iowait;
+        private volatile double irq;
+        private volatile double softirq;
+        private volatile double steal;
 
-        private double load1m;
-        private double load5m;
-        private double load15m;
+        private volatile double load1m;
+        private volatile double load5m;
+        private volatile double load15m;
 
-        private long userTimeSecondsTotal;
-        private long niceTimeInSecondsTotal;
-        private long sysTimeInSecondsTotal;
-        private long idleTimeInSecondsTotal;
-        private long iowaitTimeInSecondsTotal;
-        private long irqTimeInSecondsTotal;
-        private long softirqTimeInSecondsTotal;
-        private long stealTimeInSecondsTotal;
+        private volatile long userTimeSecondsTotal;
+        private volatile long niceTimeInSecondsTotal;
+        private volatile long sysTimeInSecondsTotal;
+        private volatile long idleTimeInSecondsTotal;
+        private volatile long iowaitTimeInSecondsTotal;
+        private volatile long irqTimeInSecondsTotal;
+        private volatile long softirqTimeInSecondsTotal;
+        private volatile long stealTimeInSecondsTotal;
 
-        public CalculatedCpuMetrics(CentralProcessor processor, boolean supportsCumulativeTimeInSeconds) {
+        public CalculatedCpuMetrics(CentralProcessor processor) {
             this.processor = processor;
-            this.supportsCumulativeTimeInSeconds = supportsCumulativeTimeInSeconds;
+            cpuSampleType = CpuSampleType.ALL;
+        }
+
+        public CalculatedCpuMetrics(CentralProcessor processor, CpuSampleType cpuSampleType) {
+            this.processor = processor;
+            this.cpuSampleType = cpuSampleType;
+        }
+
+
+        public  void refresh() {
+            if (lock.tryLock()) {
+                try {
+                    doRefresh();
+                } finally {
+                    lock.unlock();
+                }
+            }
         }
 
         // Not sure if there are any concurrent threads involved?
-        public synchronized void refresh() {
+        private  void doRefresh() {
 
             // First invocation
             if (prevTicks == null) {
@@ -164,7 +199,7 @@ public class ProcessorMetrics  implements MeterBinder {
             }
 
             // quick and dirty to prevent multiple refreshes
-            if (System.currentTimeMillis() - refreshTime < 2000) {
+            if (System.currentTimeMillis() - refreshTime < MIN_REFRESH_INTERVAL) {
                 return;
             }
 
@@ -174,26 +209,29 @@ public class ProcessorMetrics  implements MeterBinder {
             load15m = systemLoadAverage[2] < 0 ? 0 : systemLoadAverage[2];
 
             long[] ticks = processor.getSystemCpuLoadTicks();
-            long user = ticks[CentralProcessor.TickType.USER.getIndex()] - prevTicks[CentralProcessor.TickType.USER.getIndex()];
-            long nice = ticks[CentralProcessor.TickType.NICE.getIndex()] - prevTicks[CentralProcessor.TickType.NICE.getIndex()];
-            long sys = ticks[CentralProcessor.TickType.SYSTEM.getIndex()] - prevTicks[CentralProcessor.TickType.SYSTEM.getIndex()];
-            long idle = ticks[CentralProcessor.TickType.IDLE.getIndex()] - prevTicks[CentralProcessor.TickType.IDLE.getIndex()];
-            long iowait = ticks[CentralProcessor.TickType.IOWAIT.getIndex()] - prevTicks[CentralProcessor.TickType.IOWAIT.getIndex()];
-            long irq = ticks[CentralProcessor.TickType.IRQ.getIndex()] - prevTicks[CentralProcessor.TickType.IRQ.getIndex()];
-            long softirq = ticks[CentralProcessor.TickType.SOFTIRQ.getIndex()] - prevTicks[CentralProcessor.TickType.SOFTIRQ.getIndex()];
-            long steal = ticks[CentralProcessor.TickType.STEAL.getIndex()] - prevTicks[CentralProcessor.TickType.STEAL.getIndex()];
-            long totalCpu = user + nice + sys + idle + iowait + irq + softirq + steal;
 
-            this.user    = 100d * user    / totalCpu;
-            this.nice    = 100d * nice    / totalCpu;
-            this.sys     = 100d * sys     / totalCpu;
-            this.idle    = 100d * idle    / totalCpu;
-            this.iowait  = 100d * iowait  / totalCpu;
-            this.irq     = 100d * irq     / totalCpu;
-            this.softirq = 100d * softirq / totalCpu;
-            this.steal   = 100d * steal   / totalCpu;
+            if (cpuSampleType == CpuSampleType.ALL || cpuSampleType == CpuSampleType.PERCENT) {
+                long user = ticks[CentralProcessor.TickType.USER.getIndex()] - prevTicks[CentralProcessor.TickType.USER.getIndex()];
+                long nice = ticks[CentralProcessor.TickType.NICE.getIndex()] - prevTicks[CentralProcessor.TickType.NICE.getIndex()];
+                long sys = ticks[CentralProcessor.TickType.SYSTEM.getIndex()] - prevTicks[CentralProcessor.TickType.SYSTEM.getIndex()];
+                long idle = ticks[CentralProcessor.TickType.IDLE.getIndex()] - prevTicks[CentralProcessor.TickType.IDLE.getIndex()];
+                long iowait = ticks[CentralProcessor.TickType.IOWAIT.getIndex()] - prevTicks[CentralProcessor.TickType.IOWAIT.getIndex()];
+                long irq = ticks[CentralProcessor.TickType.IRQ.getIndex()] - prevTicks[CentralProcessor.TickType.IRQ.getIndex()];
+                long softirq = ticks[CentralProcessor.TickType.SOFTIRQ.getIndex()] - prevTicks[CentralProcessor.TickType.SOFTIRQ.getIndex()];
+                long steal = ticks[CentralProcessor.TickType.STEAL.getIndex()] - prevTicks[CentralProcessor.TickType.STEAL.getIndex()];
+                long totalCpu = user + nice + sys + idle + iowait + irq + softirq + steal;
 
-            if (supportsCumulativeTimeInSeconds) {
+                this.user = 100d * user / totalCpu;
+                this.nice = 100d * nice / totalCpu;
+                this.sys = 100d * sys / totalCpu;
+                this.idle = 100d * idle / totalCpu;
+                this.iowait = 100d * iowait / totalCpu;
+                this.irq = 100d * irq / totalCpu;
+                this.softirq = 100d * softirq / totalCpu;
+                this.steal = 100d * steal / totalCpu;
+            }
+
+            if (isCpuTotalSecondsSupported() && (cpuSampleType == CpuSampleType.ALL || cpuSampleType == CpuSampleType.SECONDS_TOTAL)) {
                 this.userTimeSecondsTotal = ticks[CentralProcessor.TickType.USER.getIndex()] / TICKS_PER_SEC;
                 this.niceTimeInSecondsTotal = ticks[CentralProcessor.TickType.NICE.getIndex()] / TICKS_PER_SEC;
                 this.sysTimeInSecondsTotal = ticks[CentralProcessor.TickType.SYSTEM.getIndex()] / TICKS_PER_SEC;
@@ -212,13 +250,20 @@ public class ProcessorMetrics  implements MeterBinder {
 
     @Override
     public void bindTo(MeterRegistry meterRegistry) {
-        cpuUsageInSeconds(meterRegistry);
-        cpuUsagePercent(meterRegistry);
+        if (calculatedCpuMetrics.cpuSampleType == CpuSampleType.ALL ||
+            calculatedCpuMetrics.cpuSampleType == CpuSampleType.SECONDS_TOTAL) {
+            cpuUsageInSeconds(meterRegistry);
+        }
+        if (calculatedCpuMetrics.cpuSampleType == CpuSampleType.ALL ||
+            calculatedCpuMetrics.cpuSampleType == CpuSampleType.PERCENT) {
+            cpuUsagePercent(meterRegistry);
+        }
         systemLoad(meterRegistry);
     }
 
 
     private void cpuUsagePercent(MeterRegistry meterRegistry) {
+
 
         Gauge.builder("system.cpu.usage.pct", ProcessorMetric.USER_PERCENT, this::getCpuMetricAsDouble)
             .tags(tags)
@@ -263,19 +308,19 @@ public class ProcessorMetrics  implements MeterBinder {
 
         Gauge.builder("system.load.1m",  ProcessorMetric.LOAD_1M, this::getCpuMetricAsDouble )
             .tags(tags)
-            .tag("n_cpus", String.valueOf(cpuCount))
+            .tag("cpus", String.valueOf(cpuCount))
             .description("System load 1m")
             .register(meterRegistry);
 
         Gauge.builder("system.load.5m",  ProcessorMetric.LOAD_5M, this::getCpuMetricAsDouble)
             .tags(tags)
-            .tag("n_cpus", String.valueOf(cpuCount))
+            .tag("cpus", String.valueOf(cpuCount))
             .description("System load 5m")
             .register(meterRegistry);
 
         Gauge.builder("system.load.15m",  ProcessorMetric.LOAD_15M, this::getCpuMetricAsDouble)
             .tags(tags)
-            .tag("n_cpus", String.valueOf(cpuCount))
+            .tag("cpus", String.valueOf(cpuCount))
             .description("System load 15m")
             .register(meterRegistry);
     }

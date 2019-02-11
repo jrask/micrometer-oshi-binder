@@ -14,9 +14,13 @@ import se.flapsdown.micrometer.oshi.system.ProcessorMetrics;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-public class PrometheusEndpoint {
+/**
+ * Sample with both {@link SimpleMeterRegistry} and {@link StepMeterRegistry}.
+ */
+public class RegistryExample {
 
     public static void main(String args[]) {
 
@@ -36,7 +40,7 @@ public class PrometheusEndpoint {
 
             @Override
             public Duration step() {
-                return Duration.ofSeconds(5);
+                return Duration.ofSeconds(10);
             }
 
         };
@@ -45,23 +49,41 @@ public class PrometheusEndpoint {
 
             protected void publish() {
 
-                System.out.println("#publish");
+                System.out.println(" ################ >> publish()");
+                System.out.println("##### SimpleMeterRegistry ####################");
+                for (Meter simpleMeter : simpleMeterRegistry.getMeters()) {
+
+
+                    if (simpleMeter instanceof FunctionCounter) {
+                        System.out.println(
+                            name(simpleMeter.getId().getName()) + ", count=" +
+                            ((FunctionCounter) simpleMeter).count() + ", " + getConventionTags(simpleMeter.getId())
+                            );
+
+                    }
+
+                    if (simpleMeter instanceof Gauge) {
+                        System.out.println(
+                            name(simpleMeter.getId().getName()) + ", value=" +
+                                ((Gauge) simpleMeter).value() + ", " + getConventionTags(simpleMeter.getId())
+                        );
+                    }
+                }
+
+                System.out.println("##### StepMeterRegistry ####################");
                 List<Meter> meters = getMeters();
                 for (Meter m : meters) {
-                    Meter stepMeter = simpleMeterRegistry.get(m.getId().getName()).meter();
 
                     if (m instanceof FunctionCounter) {
                         System.out.println(
-                            name(m.getId().getName()) + ", step=" + ((FunctionCounter) m).count() +  ", simple=" +
-                            ((FunctionCounter) stepMeter).count() + ", " + getConventionTags(m.getId())
-                            );
+                            name(m.getId().getName()) + ", count=" + ((FunctionCounter) m).count() +  ", " + getConventionTags(m.getId())
+                        );
 
                     }
 
                     if (m instanceof Gauge) {
                         System.out.println(
-                            name(m.getId().getName()) + ", step=" + ((Gauge) m).value() +  ", simple=" +
-                                ((Gauge) stepMeter).value() + ", " + getConventionTags(m.getId())
+                            name(m.getId().getName()) + ", value=" + ((Gauge) m).value() +  ", " + getConventionTags(m.getId())
                         );
                     }
                 }
@@ -76,12 +98,13 @@ public class PrometheusEndpoint {
 
         CompositeMeterRegistry compositeMeterRegistry = new CompositeMeterRegistry(Clock.SYSTEM);
         compositeMeterRegistry.add(reg);
-
         compositeMeterRegistry.add(simpleMeterRegistry);
+
         new NetworkMetrics().bindTo(compositeMeterRegistry);
         new MemoryMetrics().bindTo(compositeMeterRegistry);
-        new ProcessorMetrics().bindTo(compositeMeterRegistry);
-        reg.start();
+        new ProcessorMetrics(ProcessorMetrics.CpuSampleType.ALL).bindTo(compositeMeterRegistry);
+        reg.start(Executors.defaultThreadFactory());
+
 
     }
 

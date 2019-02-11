@@ -8,8 +8,12 @@ import oshi.SystemInfo;
 import oshi.hardware.NetworkIF;
 
 import java.util.Collections;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class NetworkMetrics implements MeterBinder {
+
+    public static final int MAX_REFRESH_TIME = 5_000;
 
     public enum NetworkMetric {
 
@@ -69,8 +73,10 @@ public class NetworkMetrics implements MeterBinder {
 
     private static class CachedNetworkStats {
 
+        private final Lock lock = new ReentrantLock();
+
         private final NetworkIF[] networks;
-        long lastRefresh = 0;
+        private long lastRefresh = 0;
 
         public volatile long bytesReceived;
         public volatile long bytesSent;
@@ -81,8 +87,19 @@ public class NetworkMetrics implements MeterBinder {
             this.networks = networkIFs;
         }
 
-        public synchronized void refresh() {
-            if (System.currentTimeMillis() - lastRefresh < 5_000) {
+        public  void refresh() {
+            if (lock.tryLock()) {
+                try {
+                    doRefresh();
+                } finally {
+                    lock.unlock();
+                }
+            }
+        }
+
+        private  void doRefresh() {
+
+            if (System.currentTimeMillis() - lastRefresh < MAX_REFRESH_TIME) {
                 return;
             }
 
@@ -103,6 +120,8 @@ public class NetworkMetrics implements MeterBinder {
             this.bytesSent = bytesSent;
             this.packetsReceived = packetsReceived;
             this.packetsSent = packetsSent;
+
+            this.lastRefresh = System.currentTimeMillis();
         }
     }
 }
