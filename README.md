@@ -3,7 +3,11 @@
 Micrometer.io binder for Operating System & Hardware Information (oshi)
 based on http://github/oshi/oshi
 
+## When use this?
 
+It will give you much better CPU, Memory and Network metrics than from JMX and
+is very useful if you are not running other agents on you hosts that collect
+machine metrics.
 
 ## Memory Metrics
 
